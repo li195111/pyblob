@@ -1,3 +1,4 @@
 # pyblob
 
-## Python Blob For Azure Interface
+## Python Blob For Microsoft Azure Blob Interface
+
