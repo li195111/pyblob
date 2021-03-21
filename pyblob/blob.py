@@ -137,13 +137,16 @@ class BlobAsync(BlobBase):
                 await blob_client.upload_blob(data)
         except ResourceNotFoundError:
             print(f"Blob not exists... {self.container_name}")
-            async with StorageAsync.ContainerClient.from_connection_string(conn_str=self.connect_string,
-                                                                           container_name=self.container_name) as container_client:
-                await container_client.create_container()
-            async with StorageAsync.BlobClient.from_connection_string(conn_str=self.connect_string,
-                                                                      container_name=self.container_name,
-                                                                      blob_name=blob_name) as blob_client:
-                await blob_client.upload_blob(data)
+            try:
+                async with StorageAsync.ContainerClient.from_connection_string(conn_str=self.connect_string,
+                                                                            container_name=self.container_name) as container_client:
+                    await container_client.create_container()
+                async with StorageAsync.BlobClient.from_connection_string(conn_str=self.connect_string,
+                                                                        container_name=self.container_name,
+                                                                        blob_name=blob_name) as blob_client:
+                    await blob_client.upload_blob(data)
+            except ResourceExistsError:
+                msg = "The specified container is being deleted. Try operation later."
         except Exception as err:
             error_msg(err)
 

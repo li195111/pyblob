@@ -1,3 +1,4 @@
+import asyncio
 import mimetypes
 from tempfile import SpooledTemporaryFile
 from typing import Any, List, Optional, Tuple
@@ -60,6 +61,7 @@ class AzureStorage(StaticFilesStorage):
     expiration_secs = setting("EXPIRATION_SECS")
     account_domain = setting("AZURE_CUSTOM_DOMAIN")
 
+    timeout = setting("AZURE_CONNECT_TIMEOUT_SEC", 20)
     max_memory_size = setting("AZURE_BLOB_MAX_MEMORY_SIZE", 20*1024*1024)
     overwrite_files = setting('AZURE_OVERWRITE_FILES', False)
     upload_max_conn = setting("AZURE_UPLOAD_MAX_CONN", 2)
@@ -67,7 +69,7 @@ class AzureStorage(StaticFilesStorage):
 
     file_upload_temp_dir = setting("FILE_UPLOAD_TEMP_DIR", "./")
     cache_control = setting("AZURE_CACHE_CONTROL")
-
+    run_async = setting("AZURE_RUN_ASYNC",False)
     def __init__(self):
         super().__init__()
 
@@ -122,14 +124,16 @@ class AzureStorage(StaticFilesStorage):
             await container_client.upload_blob(name=name,
                                                data=content,
                                                content_settings=params,
-                                               max_concurrency=self.upload_max_conn)
+                                               max_concurrency=self.upload_max_conn,
+                                               timeout=self.timeout)
 
     def _save_sync(self, name, content, params):
         with self._container_client as container_client:
             container_client.upload_blob(name=name,
                                          data=content,
                                          content_settings=params,
-                                         max_concurrency=self.upload_max_conn)
+                                         max_concurrency=self.upload_max_conn,
+                                         timeout=self.timeout)
 
     def _save(self, name, content):
         cleaned_name = clean_name(name)
@@ -142,29 +146,33 @@ class AzureStorage(StaticFilesStorage):
 
         content.seek(0)
         try:
-            # loop = asyncio.new_event_loop()
-            # loop.run_until_complete(self._save_async(name=name, content=content, params=params))
-            self._save_sync(name=name, content=content, params=params)
+            if self.run_async:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._save_async(
+                    name=name, content=content, params=params))
+            else:
+                self._save_sync(name=name, content=content, params=params)
             return cleaned_name
         except ResourceExistsError:
             pass
 
     def delete(self, name: str) -> None:
         with self._container_client as container_client:
-            container_client.delete_blob(name)
+            container_client.delete_blob(name, timeout=self.timeout)
 
     def exists(self, name: str) -> bool:
         with self._container_client as container_client:
-            return name in [blob.name for blob in container_client.list_blobs()]
+            return name in [blob.name for blob in container_client.list_blobs(timeout=self.timeout)]
 
     def listdir(self, path: str) -> Tuple[List[str], List[str]]:
         with self._container_client as container_client:
-            return [blob.name for blob in container_client.list_blobs()]
+            return [blob.name for blob in container_client.list_blobs(timeout=self.timeout)]
 
     def size(self, name: str) -> int:
         with self._container_client as container_client:
-            with container_client.get_blob_client(name) as blob_client:
-                return blob_client.get_blob_properties().size
+            with container_client.get_blob_client(name, timeout=self.timeout) as blob_client:
+                return blob_client.get_blob_properties(
+                    timeout=self.timeout).size
 
     def url(self, name: Optional[str]) -> str:
         return super().url(name)
@@ -185,11 +193,13 @@ class AzureStorageFile(File):
 
     async def download_file_async(self, file: SpooledTemporaryFile):
         async with self._storage._container_client_async as container_client:
-            await container_client.download_blob(self.name).readinto(file)
+            await container_client.download_blob(self.name,
+                                                 timeout=self.timeout).readinto(file)
 
     def download_file(self, file):
         with self._storage._container_client as container_client:
-            container_client.download_blob(self.name).readinto(file)
+            container_client.download_blob(self.name,
+                                           timeout=self.timeout).readinto(file)
 
     def _get_file(self):
         if self._file:
@@ -198,9 +208,11 @@ class AzureStorageFile(File):
                                     suffix=".AzureStorageBlobFile",
                                     dir=self._storage.file_upload_temp_dir)
         if 'r' in self.mode or 'a' in self.mode:
-            # loop = asyncio.new_event_loop()
-            # loop.run_until_complete(self.download_file_async(file))
-            self.download_file(file)
+            if self._storage.run_async:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.download_file_async(file))
+            else:
+                self.download_file(file)
         if 'r' in self.mode:
             # 將讀取指針到開頭位置
             file.seek(0)
