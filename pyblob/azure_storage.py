@@ -10,7 +10,7 @@ from django.contrib.staticfiles.storage import StaticFilesStorage
 from django.core.exceptions import SuspiciousOperation
 from django.core.files.base import File
 
-from .blob import StorageAsync, StorageSync
+from .azure_blob import Blob
 from .utils import clean_name, safe_join
 
 _AZURE_NAME_MAX_LEN = 1024
@@ -69,21 +69,15 @@ class AzureStorage(StaticFilesStorage):
 
     file_upload_temp_dir = setting("FILE_UPLOAD_TEMP_DIR", "./")
     cache_control = setting("AZURE_CACHE_CONTROL")
-    run_async = setting("AZURE_RUN_ASYNC",False)
+    run_async = setting("AZURE_RUN_ASYNC", False)
+
     def __init__(self):
         super().__init__()
-
-    @property
-    def _container_client(self):
-        return StorageSync.ContainerClient(account_url=self.account_domain,
-                                           container_name=self.container_name,
-                                           credential=self.account_key)
-
-    @property
-    async def _container_client_async(self):
-        return StorageAsync.ContainerClient(account_url=self.account_domain,
-                                            container_name=self.container_name,
-                                            credential=self.account_key)
+        self.blob = Blob(container_name=self.container_name,
+                         isasync=self.run_async,
+                         account_name=self.account_name,
+                         account_key=self.account_key,
+                         timeout=self.timeout)
 
     def _normalize_name(self, name):
         try:
@@ -119,22 +113,6 @@ class AzureStorage(StaticFilesStorage):
     def _open(self, name, mode="rb"):
         return AzureStorageFile(name, mode, self)
 
-    async def _save_async(self, name, content, params):
-        async with self._container_client_async as container_client:
-            await container_client.upload_blob(name=name,
-                                               data=content,
-                                               content_settings=params,
-                                               max_concurrency=self.upload_max_conn,
-                                               timeout=self.timeout)
-
-    def _save_sync(self, name, content, params):
-        with self._container_client as container_client:
-            container_client.upload_blob(name=name,
-                                         data=content,
-                                         content_settings=params,
-                                         max_concurrency=self.upload_max_conn,
-                                         timeout=self.timeout)
-
     def _save(self, name, content):
         cleaned_name = clean_name(name)
         name = self._get_valid_path(name)
@@ -146,33 +124,29 @@ class AzureStorage(StaticFilesStorage):
 
         content.seek(0)
         try:
-            if self.run_async:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._save_async(
-                    name=name, content=content, params=params))
-            else:
-                self._save_sync(name=name, content=content, params=params)
+            self.blob.blob_name = cleaned_name
+            if not self.blob.blob_exists:
+                self.blob.upload_blob(blob_name=cleaned_name,
+                                      data=content,
+                                      content_settings=params,
+                                      max_concurrency=self.upload_max_conn,
+                                      timeout=self.timeout)
             return cleaned_name
         except ResourceExistsError:
             pass
 
     def delete(self, name: str) -> None:
-        with self._container_client as container_client:
-            container_client.delete_blob(name, timeout=self.timeout)
+        return self.blob.delete_blob(name, timeout=self.timeout)
 
     def exists(self, name: str) -> bool:
-        with self._container_client as container_client:
-            return name in [blob.name for blob in container_client.list_blobs(timeout=self.timeout)]
+        self.blob.blob_name = name
+        return self.blob.blob_exists
 
     def listdir(self, path: str) -> Tuple[List[str], List[str]]:
-        with self._container_client as container_client:
-            return [blob.name for blob in container_client.list_blobs(timeout=self.timeout)]
+        return self.blob.blobs
 
     def size(self, name: str) -> int:
-        with self._container_client as container_client:
-            with container_client.get_blob_client(name, timeout=self.timeout) as blob_client:
-                return blob_client.get_blob_properties(
-                    timeout=self.timeout).size
+        return self.blob.blob_properties(name).size
 
     def url(self, name: Optional[str]) -> str:
         return super().url(name)
@@ -191,16 +165,6 @@ class AzureStorageFile(File):
         self._file = None
         self._path = storage
 
-    async def download_file_async(self, file: SpooledTemporaryFile):
-        async with self._storage._container_client_async as container_client:
-            await container_client.download_blob(self.name,
-                                                 timeout=self.timeout).readinto(file)
-
-    def download_file(self, file):
-        with self._storage._container_client as container_client:
-            container_client.download_blob(self.name,
-                                           timeout=self.timeout).readinto(file)
-
     def _get_file(self):
         if self._file:
             return self._file
@@ -208,11 +172,8 @@ class AzureStorageFile(File):
                                     suffix=".AzureStorageBlobFile",
                                     dir=self._storage.file_upload_temp_dir)
         if 'r' in self.mode or 'a' in self.mode:
-            if self._storage.run_async:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self.download_file_async(file))
-            else:
-                self.download_file(file)
+            self._storage.blob.download_blob(blob_name=self.name,
+                                             timeout=self.timeout).readinto(file)
         if 'r' in self.mode:
             # 將讀取指針到開頭位置
             file.seek(0)
