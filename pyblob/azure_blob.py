@@ -155,6 +155,15 @@ class BlobAsync(BlobBase):
             async for blob in container_client.list_blobs(*args, **kwargs):
                 blobs_list.append(blob)
         return blobs_list
+    
+    @property
+    async def blob_url(self):
+        try:
+            async with self._blob_client as blob_client:
+                return blob_client.url
+        except Exception as err:
+            error_msg(err) 
+
 
     async def blob_properties(self, blob_name, *args, **kwargs):
         try:
@@ -268,6 +277,14 @@ class BlobSync(BlobBase):
             return blobs_list
         except Exception as err:
             error_msg(err)
+    
+    @property
+    def blob_url(self):
+        try:
+            with self._blob_client as blob_client:
+                return blob_client.url
+        except Exception as err:
+            error_msg(err) 
 
     def blob_properties(self, blob_name, *args, **kwargs)->StorageSync.BlobProperties:
         try:
@@ -359,6 +376,10 @@ class Blob:
             return self.run_async(self.blob.list_blobs,**{'timeout':self.timeout})
         else:
             return self.blob.list_blobs(**{'timeout':self.timeout})
+
+    @property
+    def blob_url(self):
+        return self.blob.blob_url
 
     def blob_properties(self, blob_name: str):
         if self.isasync:
