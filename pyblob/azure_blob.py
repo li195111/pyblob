@@ -1,5 +1,6 @@
 import asyncio
-from typing import Any, List, Tuple, Union
+import logging
+from typing import Any, List, Union
 
 import azure.storage.blob as StorageSync
 import azure.storage.blob.aio as StorageAsync
@@ -8,6 +9,7 @@ from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from pyblob.protocal import Protocal
 from pyblob.utils import error_msg
 
+logger = logging.getLogger('info-simple')
 
 class BlobBase:
     def __init__(self, container_name: str, blob_name: str = None,
@@ -94,33 +96,32 @@ class BlobBase:
     def blob_name(self, blob_name):
         self._blob_name = blob_name
 
-
 class BlobAsync(BlobBase):
     def __init__(self, container_name: str, blob_name: str = None,
                  connect_string: str = None, protocal: Protocal = Protocal.https, host: str = None, account_name: str = None, account_key: str = None,
                  blob_port: Union[str, int] = None, queue_port: Union[str, int] = None, table_port: Union[str, int] = None, **kwargs) -> None:
-        super(BlobAsync, self).__init__(container_name=container_name, blob_name=blob_name,
-                                        account_name=account_name, account_key=account_key, connect_string=connect_string,
-                                        protocal=protocal,
-                                        host=host, blob_port=blob_port, queue_port=queue_port, table_port=table_port, **kwargs)
+        super().__init__(container_name=container_name, blob_name=blob_name,
+                         account_name=account_name, account_key=account_key, connect_string=connect_string,
+                         protocal=protocal,
+                         host=host, blob_port=blob_port, queue_port=queue_port, table_port=table_port, **kwargs)
 
     @property
-    async def _service_client(self)->StorageAsync.BlobServiceClient:
-        return await StorageAsync.BlobServiceClient(account_url=self.account_url,
-                                                    credential=self._account_key)
+    def _service_client(self) -> StorageAsync.BlobServiceClient:
+        return StorageAsync.BlobServiceClient(account_url=self.account_url,
+                                              credential=self._account_key)
 
     @property
-    async def _container_client(self)->StorageAsync.ContainerClient:
-        return await StorageAsync.ContainerClient(account_url=self.account_url,
-                                                  container_name=self.container_name,
-                                                  credential=self._account_key)
+    def _container_client(self) -> StorageAsync.ContainerClient:
+        return StorageAsync.ContainerClient(account_url=self.account_url,
+                                            container_name=self.container_name,
+                                            credential=self._account_key)
 
     @property
-    async def _blob_client(self)->StorageAsync.BlobClient:
-        return await StorageAsync.BlobClient(account_url=self.account_url,
-                                             container_name=self.container_name,
-                                             blob_name=self.blob_name,
-                                             credential=self._account_key)
+    def _blob_client(self) -> StorageAsync.BlobClient:
+        return StorageAsync.BlobClient(account_url=self.account_url,
+                                       container_name=self.container_name,
+                                       blob_name=self.blob_name,
+                                       credential=self._account_key)
 
     async def list_container(self,*args, **kwargs) -> list:
         containers_list = []
@@ -130,24 +131,12 @@ class BlobAsync(BlobBase):
         return containers_list
 
     async def create_container(self,*args, **kwargs):
-        try:
-            print(f"Create Container ... {self.container_name}")
-            async with self._container_client as container_client:
-                await container_client.create_container(*args, **kwargs)
-            print(f"Create Container ... {self.container_name} ... Success")
-        except ResourceExistsError:
-            print(f"Container Exists ... {self.container_name}")
-        except Exception as err:
-            print(f"Create Container ... {self.container_name} ... Failed")
-            error_msg(err)
-
+        async with self._container_client as container_client:
+            await container_client.create_container(*args, **kwargs)
+            
     async def delete_container(self, *args, **kwargs):
-        try:
-            print(f"Deleting blob container... {self.container_name}")
-            async with self._container_client as container_client:
-                return await container_client.delete_container(*args, **kwargs)
-        except ResourceNotFoundError:
-            print(f"Container Not Found... {self.container_name}")
+        async with self._container_client as container_client:
+            return await container_client.delete_container(*args, **kwargs)
 
     async def list_blobs(self,*args, **kwargs)->list:
         blobs_list = []
@@ -156,60 +145,37 @@ class BlobAsync(BlobBase):
                 blobs_list.append(blob)
         return blobs_list
     
+    async def walk_blobs(self, *args, **kwargs) -> List:
+        blobs_list = []
+        async with self._container_client as container_client:
+            async for blob in container_client.walk_blobs(*args, **kwargs):
+                blobs_list.append(blob)
+        return blobs_list
+
     @property
     async def blob_url(self):
-        try:
-            async with self._blob_client as blob_client:
-                return blob_client.url
-        except Exception as err:
-            error_msg(err) 
-
+        async with self._blob_client as blob_client:
+            return blob_client.url
 
     async def blob_properties(self, blob_name, *args, **kwargs):
-        try:
-            self.blob_name = blob_name
-            async with self._blob_client as blob_client:
-                return await blob_client.get_blob_properties(*args, **kwargs)
-        except Exception as err:
-            error_msg(err)
+        self.blob_name = blob_name
+        async with self._blob_client as blob_client:
+            return await blob_client.get_blob_properties(*args, **kwargs)
+    
+    async def upload_blob(self, blob_name: str, data: Union[str, bytes], *args, **kwargs) -> None:
+        self.blob_name = blob_name
+        async with self._blob_client as blob_client:
+            return await blob_client.upload_blob(data, *args, **kwargs)
 
-    async def upload_blob(self, blob_name: str, data: Union[str, bytes]) -> None:
-        try:
-            print(f"Upload Blob ... {blob_name}")
-            self.blob_name = blob_name
-            async with self._blob_client as blob_client:
-                return await blob_client.upload_blob(data)
-        except ResourceNotFoundError:
-            print(f"Blob not exists... {self.container_name}")
-            try:
-                async with self._container_client as container_client:
-                    await container_client.create_container()
-                self.blob_name = blob_name
-                async with self._blob_client as blob_client:
-                    return await blob_client.upload_blob(data)
-            except ResourceExistsError:
-                msg = "The specified container is being deleted. Try operation later."
-        except ResourceExistsError:
-            pass
-        except Exception as err:
-            error_msg(err)
+    async def get_blob(self, blob_name: str, *args, **kwargs)->StorageAsync.StorageStreamDownloader:
+        self.blob_name = blob_name
+        async with self._blob_client as blob_client:
+            return await blob_client.download_blob(*args, **kwargs)
 
-    async def get_blob(self, blob_name: str)->StorageAsync.StorageStreamDownloader:
-        try:
-            self.blob_name = blob_name
-            async with self._blob_client as blob_client:
-                return await blob_client.download_blob()
-        except Exception as err:
-            error_msg(err)
-
-    async def delete_blob(self, blob_name: str)->None:
-        try:
-            self.blob_name = blob_name
-            async with self._blob_client as blob_client:
-                return await blob_client.delete_blob()
-        except Exception as err:
-            error_msg(err)
-
+    async def delete_blob(self, blob_name: str, *args, **kwargs)->None:
+        self.blob_name = blob_name
+        async with self._blob_client as blob_client:
+            return await blob_client.delete_blob(*args, **kwargs)
 
 class BlobSync(BlobBase):
     def __init__(self, container_name: str, blob_name: str = None,
@@ -240,85 +206,59 @@ class BlobSync(BlobBase):
 
     def list_container(self, *args, **kwargs) -> list:
         containers_list = []
-        try:
-            with self._service_client as service_client:
-                for container in service_client.list_containers(*args, **kwargs):
-                    containers_list.append(container.name)
-            return containers_list
-        except Exception as err:
-            error_msg(err)
+        with self._service_client as service_client:
+            for container in service_client.list_containers(*args, **kwargs):
+                containers_list.append(container.name)
+        return containers_list
 
     def create_container(self, *args, **kwargs)-> Union[dict,None]:
-        try:
-            print(f"Create Container ... {self.container_name}")
-            with self._container_client as container_client:
-                container_client.create_container(*args, **kwargs)
-            print(f"Create Container Success!... {self.container_name}")
-        except ResourceExistsError:
-            print(f"Container Exists... {self.container_name}")
-        except Exception as err:
-            print(f"Create Container ... {self.container_name} ... Failed")
-            error_msg(err)
+        with self._container_client as container_client:
+            container_client.create_container(*args, **kwargs)
 
     def delete_container(self, *args, **kwargs)->None:
-        try:
-            with self._container_client as container_client:
-                return container_client.delete_container(*args, **kwargs)
-            print(f"Deleting blob container... {self.container_name}")
-        except ResourceNotFoundError:
-            print(f"Container Not Found... {self.container_name}")
+        with self._container_client as container_client:
+            return container_client.delete_container(*args, **kwargs)
 
     def list_blobs(self, *args, **kwargs) -> List[str]:
         blobs_list = []
-        try:
-            with self._container_client as container_client:
-                for blob in container_client.list_blobs(*args, **kwargs):
-                    blobs_list.append(blob)
-            return blobs_list
-        except Exception as err:
-            error_msg(err)
+        with self._container_client as container_client:
+            for blob in container_client.list_blobs(*args, **kwargs):
+                blobs_list.append(blob)
+        return blobs_list
+    
+    def walk_blobs(self, *args, **kwargs) -> List:
+        blobs_list = []
+        with self._container_client as container_client:
+            for blob in container_client.walk_blobs(*args, **kwargs):
+                blobs_list.append(blob)
+        return blobs_list
     
     @property
     def blob_url(self):
-        try:
-            with self._blob_client as blob_client:
-                return blob_client.url
-        except Exception as err:
-            error_msg(err) 
-
+        with self._blob_client as blob_client:
+            return blob_client.url
+        
     def blob_properties(self, blob_name, *args, **kwargs)->StorageSync.BlobProperties:
-        try:
-            self.blob_name = blob_name
-            with self._blob_client as blob_client:
-                return blob_client.get_blob_properties(*args, **kwargs)
-        except Exception as err:
-            error_msg(err)
-
+        self.blob_name = blob_name
+        with self._blob_client as blob_client:
+            return blob_client.get_blob_properties(*args, **kwargs)
+        
     def upload_blob(self, blob_name: str, data: Union[str, bytes], *args, **kwargs)->Any:
-        try:
-            self.blob_name = blob_name
-            with self._blob_client as blob_client:
-                return blob_client.upload_blob(data, *args, **kwargs)
-        except ResourceExistsError:
-            pass
-        except Exception as err:
-            error_msg(err)
+        self.blob_name = blob_name
+        with self._blob_client as blob_client:
+            return blob_client.upload_blob(data, *args, **kwargs)
 
-    def get_blob(self, blob_name: str)->StorageSync.StorageStreamDownloader:
-        try:
-            self.blob_name = blob_name
-            with self._blob_client as blob_client:
-                return blob_client.download_blob()
-        except Exception as err:
-            error_msg(err)
+    def get_blob(self, blob_name: str, *args, **kwargs)->Union[StorageSync.StorageStreamDownloader,bytes]:
+        self.blob_name = blob_name
+        with self._blob_client as blob_client:
+            if kwargs.get('readall'):
+                return blob_client.download_blob().readall() 
+            return blob_client.download_blob()
 
     def delete_blob(self, blob_name: str)->None:
-        try:
-            self.blob_name = blob_name
-            with self._blob_client as blob_client:
-                return blob_client.delete_blob()
-        except Exception as err:
-            error_msg(err)
+        self.blob_name = blob_name
+        with self._blob_client as blob_client:
+            return blob_client.delete_blob()
 
 
 class Blob:
@@ -348,6 +288,10 @@ class Blob:
         self.blob.container_name = container_name
 
     @property
+    def container_url(self):
+        return self.blob._container_client.url
+    
+    @property
     def blob_name(self):
         return self.blob.blob_name
 
@@ -357,6 +301,7 @@ class Blob:
 
     @property
     def container_exists(self):
+        logger.info(f"Check Container Exists ... {self.container_name}")
         if self.isasync:
             container_list = self.run_async(self.blob.list_container,**{'timeout':self.timeout})
         else:
@@ -365,51 +310,124 @@ class Blob:
 
     @property
     def blob_exists(self):
+        logger.info(f"Check Blob Exists ... {self.blob_name}")
         if self.isasync:
             return self.blob_name in self.run_async(self.blob.list_blobs,**{'timeout':self.timeout})
-        else:
-            return self.blob_name in self.blob.list_blobs(**{'timeout':self.timeout})
+        return self.blob_name in self.blob.list_blobs(**{'timeout':self.timeout})
     
     @property
     def blobs(self):
+        logger.info(f"Get Blobs ...")
         if self.isasync:
             return self.run_async(self.blob.list_blobs,**{'timeout':self.timeout})
-        else:
-            return self.blob.list_blobs(**{'timeout':self.timeout})
+        return self.blob.list_blobs(**{'timeout':self.timeout})
 
     @property
     def blob_url(self):
-        return self.blob.blob_url
+        try:
+            logger.info(f"URL ... {self.blob_name}")
+            return self.blob.blob_url
+        except Exception as err:
+            error_msg(err) 
 
-    def blob_properties(self, blob_name: str):
-        if self.isasync:
-            return self.run_async(self.blob.blob_properties,**{'blob_name':blob_name,'timeout':self.timeout})
-        return self.blob.blob_properties(**{'blob_name':blob_name,'timeout':self.timeout})
+    def walk_blobs(self, *args, **kwargs):
+        try:
+            logger.info(f"Walk Blob ... {args[0]}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.walk_blobs, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.walk_blobs(*args,**kwargs)
+        except Exception as err:
+            error_msg(err) 
 
+
+    def blob_properties(self, blob_name: str, *args, **kwargs):
+        try:
+            logger.info(f"Properties ... {blob_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.blob_properties, blob_name, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.blob_properties(blob_name, *args, **kwargs)
+        except Exception as err:
+            error_msg(err)
+            
     def create_container(self, *args, **kwargs):
-        if self.isasync:
-            return self.run_async(self.blob.create_container, *args, **kwargs)
-        return self.blob.create_container(*args, **kwargs)
+        try:
+            logger.info(f"Create Container ... {self.container_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.create_container, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.create_container(*args,**kwargs)
+        except ResourceExistsError:
+            logger.info(f"Container Exists ... {self.container_name}")
+        except Exception as err:
+            error_msg(err)
+        
 
     def delete_container(self, *args, **kwargs):
-        if self.isasync:
-            return self.run_async(self.blob.delete_container, *args, **kwargs)
-        return self.blob.delete_container(*args, **kwargs)
+        try:
+            logger.info(f"Deleting container ... {self.container_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.delete_container, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.delete_container(*args,**kwargs)
+        except ResourceNotFoundError:
+            logger.info(f"Container Not Found ... {self.container_name}")
+        except Exception as err:
+            error_msg(err)
 
     def upload_blob(self, blob_name: str, data: Union[str, bytes], *args, **kwargs):
-        if self.isasync:
-            return self.run_async(self.blob.upload_blob, *(blob_name, data), *args, **kwargs)
-        return self.blob.upload_blob(blob_name=blob_name, data=data, *args, **kwargs)
+        try:
+            logger.info(f"Upload ... {blob_name}")
+            kwargs.update({'timeout':self.timeout,})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.upload_blob, blob_name, data, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.upload_blob(blob_name=blob_name, data=data, *args, **kwargs)
+        except ResourceNotFoundError:
+            logger.info(f"Container Not Found ... {self.container_name}")
+            try:
+                self.create_container()
+                kwargs.update({'timeout':self.timeout,})
+                return self.upload_blob(blob_name=blob_name,data=data,*args,**kwargs)
+            except ResourceExistsError:
+                logger.info("The specified container is being deleted. Try operation later.")
+        except ResourceExistsError:
+            logger.info("Blob Exists. to overwrite please use 'overwrite=True'")
+        except Exception as err:
+            error_msg(err)
 
     def download_blob(self, blob_name: str, *args, **kwargs):
-        if self.isasync:
-            return self.run_async(self.blob.get_blob, *(blob_name,), *args, **kwargs)
-        return self.blob.get_blob(blob_name=blob_name, *args, **kwargs)
+        try:
+            logger.info(f"Download ... {blob_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                if kwargs.get('readall'):
+                    kwargs.pop('readall')
+                    blob_downloader = self.run_async(self.blob.get_blob, blob_name=blob_name, *args, **kwargs)
+                    return self.run_async(blob_downloader.readall)
+                return self.run_async(self.blob.get_blob, blob_name=blob_name, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.get_blob(blob_name=blob_name, *args, **kwargs)
+        except Exception as err:
+            error_msg(err)
 
     def delete_blob(self, blob_name: str, *args, **kwargs):
-        if self.isasync:
-            return self.run_async(self.blob.delete_blob, *(blob_name,), *args, **kwargs)
-        return self.blob.delete_blob(blob_name=blob_name, *args, **kwargs)
+        try:
+            logger.info(f"Delete ... {blob_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                return self.run_async(self.blob.delete_blob, blob_name, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.delete_blob(blob_name=blob_name, *args, **kwargs)
+        except ResourceNotFoundError:
+            logger.info(f"Blob not exists... {self.container_name}")
+        except Exception as err:
+            error_msg(err)
 
     def run_async(self, func, *args, **kwargs):
-        return asyncio.get_event_loop().run_until_complete(func(*args, **kwargs))
+        return asyncio.new_event_loop().run_until_complete(func(*args, **kwargs))

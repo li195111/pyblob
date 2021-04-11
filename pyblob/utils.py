@@ -1,16 +1,35 @@
-import sys, traceback
+import sys
+import logging
+import traceback
 import posixpath
+import mimetypes
+from azure.storage.blob import ContentSettings
 
-def error_msg(err, show_details=True):
+logger = logging.getLogger('warning-verbose')
+
+def get_content_settings_parameters(name, content=None, cache_control=None):
+    guessed_type, content_encoding = mimetypes.guess_type(name)
+    content_type = (guessed_type)
+
+    params = {'cache_control': cache_control,
+              'content_type': content_type,
+              'content_encoding': content_encoding}
+    return ContentSettings(**params)
+
+
+def error_msg(err):
     error_class = err.__class__.__name__
-    if len(err.args) > 0: detail = err.args[0]
-    else: detail = ''
+    if len(err.args) > 0:
+        detail = err.args[0]
+    else:
+        detail = ''
     cl, exc, tb = sys.exc_info()
-    details = '\n'.join([f"File \"{s[0]}\", line {s[1]} in {s[2]}" for s in traceback.extract_tb(tb)])
+    details = '\n'.join(
+        [f"File \"{s[0]}\", line {s[1]} in {s[2]}" for s in traceback.extract_tb(tb)])
     errMsg = f"\n[{error_class}] {detail}"
-    if show_details: print(details, errMsg)
-    else: print (errMsg)
-    
+    logger.error(details, errMsg)
+
+
 def clean_name(name):
     """
     Cleans the name so that Windows style paths work
@@ -29,7 +48,8 @@ def clean_name(name):
         clean_name = ''
 
     return clean_name
-    
+
+
 def safe_join(base, *paths):
     """
     A version of django.utils._os.safe_join for S3 paths.
