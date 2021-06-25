@@ -1,11 +1,12 @@
 import asyncio
+import datetime
 import logging
 from typing import Any, List, Union
 
 import azure.storage.blob as StorageSync
 import azure.storage.blob.aio as StorageAsync
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-
+from azure.storage.common import CloudStorageAccount
 from pyblob.protocal import Protocal
 from pyblob.utils import error_msg
 
@@ -95,6 +96,16 @@ class BlobBase:
     @blob_name.setter
     def blob_name(self, blob_name):
         self._blob_name = blob_name
+        
+    def get_sas_token(self, blob_name, expiry=datetime.datetime.utcnow() + datetime.timedelta(hours=1)):
+        return StorageSync.generate_blob_sas(account_name=self._account_name,
+                                             account_key=self._account_key,
+                                             container_name=self.container_name,
+                                             blob_name=blob_name,
+                                             permission=StorageSync.BlobSasPermissions(
+                                                 read=True),
+                                             expiry=expiry)
+
 
 class BlobAsync(BlobBase):
     def __init__(self, container_name: str, blob_name: str = None,
@@ -171,7 +182,11 @@ class BlobAsync(BlobBase):
         self.blob_name = blob_name
         async with self._blob_client as blob_client:
             return await blob_client.download_blob(*args, **kwargs)
-
+    async def read_blob(self, blob_name:str, *args, **kwargs):
+        self.blob_name = blob_name
+        async with self._blob_client as blob_client:
+            storageStream:StorageAsync.StorageStreamDownloader = await blob_client.download_blob(*args, **kwargs)
+            return await storageStream.readall()
     async def delete_blob(self, blob_name: str, *args, **kwargs)->None:
         self.blob_name = blob_name
         async with self._blob_client as blob_client:
@@ -248,12 +263,16 @@ class BlobSync(BlobBase):
         with self._blob_client as blob_client:
             return blob_client.upload_blob(data, *args, **kwargs)
 
-    def get_blob(self, blob_name: str, *args, **kwargs)->Union[StorageSync.StorageStreamDownloader,bytes]:
+    def get_blob(self, blob_name: str, *args, **kwargs)->StorageSync.StorageStreamDownloader:
         self.blob_name = blob_name
         with self._blob_client as blob_client:
-            if kwargs.get('readall'):
-                return blob_client.download_blob().readall() 
-            return blob_client.download_blob()
+            return blob_client.download_blob(*args, **kwargs)
+        
+    def read_blob(self, blob_name:str, *args, **kwargs):
+        self.blob_name = blob_name
+        with self._blob_client as blob_client:
+            storageStream:StorageSync.StorageStreamDownloader = blob_client.download_blob(*args, **kwargs)
+            return storageStream.readall()
 
     def delete_blob(self, blob_name: str)->None:
         self.blob_name = blob_name
@@ -307,6 +326,9 @@ class Blob:
         else:
             container_list = self.blob.list_container(**{'timeout':self.timeout})
         return self.container_name in container_list
+    @property
+    def container_url(self):
+        return f"{self.blob.account_url}/{self.container_name}"
 
     @property
     def blob_exists(self):
@@ -325,16 +347,21 @@ class Blob:
     @property
     def blob_url(self):
         try:
-            logger.info(f"URL ... {self.blob_name}")
-            return self.blob.blob_url
+            return f"{self.blob.account_url}/{self.container_name}/{self.blob_name}"
         except Exception as err:
             error_msg(err) 
+            
+    def get_sas_token(self, blob_name, expiry=datetime.datetime.utcnow() + datetime.timedelta(hours=1)):
+        return self.blob.get_sas_token(blob_name, expiry=expiry)
 
     def walk_blobs(self, *args, **kwargs):
         try:
             logger.info(f"Walk Blob ... {args[0]}")
             kwargs.update({'timeout':self.timeout})
-            if self.isasync and not kwargs.get('raw'):
+            raw = kwargs.get('raw')
+            if self.isasync and not raw:
+                if raw:
+                    kwargs.pop('raw')
                 return self.run_async(self.blob.walk_blobs, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.walk_blobs(*args,**kwargs)
@@ -347,6 +374,7 @@ class Blob:
             logger.info(f"Properties ... {blob_name}")
             kwargs.update({'timeout':self.timeout})
             if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
                 return self.run_async(self.blob.blob_properties, blob_name, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.blob_properties(blob_name, *args, **kwargs)
@@ -358,6 +386,7 @@ class Blob:
             logger.info(f"Create Container ... {self.container_name}")
             kwargs.update({'timeout':self.timeout})
             if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
                 return self.run_async(self.blob.create_container, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.create_container(*args,**kwargs)
@@ -372,6 +401,7 @@ class Blob:
             logger.info(f"Deleting container ... {self.container_name}")
             kwargs.update({'timeout':self.timeout})
             if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
                 return self.run_async(self.blob.delete_container, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.delete_container(*args,**kwargs)
@@ -385,6 +415,7 @@ class Blob:
             logger.info(f"Upload ... {blob_name}")
             kwargs.update({'timeout':self.timeout,})
             if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
                 return self.run_async(self.blob.upload_blob, blob_name, data, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.upload_blob(blob_name=blob_name, data=data, *args, **kwargs)
@@ -406,13 +437,22 @@ class Blob:
             logger.info(f"Download ... {blob_name}")
             kwargs.update({'timeout':self.timeout})
             if self.isasync and not kwargs.get('raw'):
-                if kwargs.get('readall'):
-                    kwargs.pop('readall')
-                    blob_downloader = self.run_async(self.blob.get_blob, blob_name=blob_name, *args, **kwargs)
-                    return self.run_async(blob_downloader.readall)
+                kwargs.pop('raw')
                 return self.run_async(self.blob.get_blob, blob_name=blob_name, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.get_blob(blob_name=blob_name, *args, **kwargs)
+        except Exception as err:
+            error_msg(err)
+            
+    def read_blob(self, blob_name:str, *args, **kwargs):
+        try:
+            logger.info(f"Read ... {blob_name}")
+            kwargs.update({'timeout':self.timeout})
+            if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
+                return self.run_async(self.blob.read_blob, blob_name=blob_name, *args, **kwargs)
+            kwargs.pop('raw')
+            return self.blob.read_blob(blob_name=blob_name, *args, **kwargs)
         except Exception as err:
             error_msg(err)
 
@@ -421,6 +461,7 @@ class Blob:
             logger.info(f"Delete ... {blob_name}")
             kwargs.update({'timeout':self.timeout})
             if self.isasync and not kwargs.get('raw'):
+                kwargs.pop('raw')
                 return self.run_async(self.blob.delete_blob, blob_name, *args, **kwargs)
             kwargs.pop('raw')
             return self.blob.delete_blob(blob_name=blob_name, *args, **kwargs)

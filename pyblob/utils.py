@@ -28,7 +28,7 @@ def error_msg(err):
         [f"File \"{s[0]}\", line {s[1]} in {s[2]}" for s in traceback.extract_tb(tb)])
     errMsg = f"\n[{error_class}] {detail}"
     logger.error(f"\n{details}{errMsg}\n")
-    
+
 
 def clean_name(name):
     """
