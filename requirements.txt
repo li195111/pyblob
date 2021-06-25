@@ -1,2 +1,6 @@
+aiohttp
 django
 azure-storage-blob
+azure-storage-file
+azure-storage-queue
+azure-storage-common
