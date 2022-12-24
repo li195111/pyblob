@@ -17,7 +17,7 @@ packages = [
 
 setup (
     name='pyblob',
-    version='0.1',
+    version='0.2',
     description='Python Blob For Microsoft Azure Blob Interface',
     url='https://github.com/li195111/pyblob',
     author='Yue Li',
